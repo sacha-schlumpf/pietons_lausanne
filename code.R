@@ -1,0 +1,473 @@
+rm(list = ls()); graphics.off(); cat('\014') # tout réinitialiser
+
+# Préparation -------------------------------------------------------------
+
+require('caret')
+require('leaps')
+require('dplyr')
+require('tidyverse')
+require('funModeling')
+require('ggplot2')
+require('gridExtra')
+
+d_full = read.csv('var.csv', sep = ',')
+
+d_full_log = d_full
+d_full_log$jeu_7_9 = log(d_full_log$jeu_7_9, exp(1))
+d_full_log$jeu_11_13 = log(d_full_log$jeu_11_13, exp(1))
+d_full_log$jeu_17_19 = log(d_full_log$jeu_17_19, exp(1))
+d_full_log$sam_7_9 = log(d_full_log$sam_7_9, exp(1))
+d_full_log$sam_11_13 = log(d_full_log$sam_11_13, exp(1))
+d_full_log$sam_17_19 = log(d_full_log$sam_17_19, exp(1))
+
+set.seed(12)
+
+# création du step model avec l'aide de :
+# http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/154-stepwise-regression-essentials-in-r/
+
+# théorie du k-fold Cross-Validation
+# https://machinelearningmastery.com/k-fold-cross-validation/
+
+# Variables avec lesquelles on peut jouer ---------------------------------
+
+# pour le machine learning (number : nombre de groupes / repeats : nombre de répétitions)
+train_control <- trainControl(method = 'repeatedcv', number = 10, repeats = 10)
+
+# valeur du nvmax : nombre maximum de variables de prédiction
+nv_jmat = 2
+nv_jmidi = 2
+nv_jsoir = 3
+nv_smat = 2
+nv_smidi = 2 # 1
+nv_ssoir = 5
+
+# méthode pour la création du modèle
+methode = 'leapSeq' # stepwise regression
+metric = 'Rsquared' # basée sur les corrélations au carré
+
+# Calcul des modèles --------------------------------------------------------
+
+# jeudi matin
+
+d_jmat = subset(d_full_log, select = -c(fid, compteur, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jmat = d_jmat[complete.cases(d_jmat),]
+
+step_model_jmat = train(jeu_7_9 ~., data = d_ped_jmat, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jmat), trControl = train_control)
+
+coef_jmat = coef(step_model_jmat$finalModel, step_model_jmat$bestTune[1, 1])
+
+# jeudi midi
+
+d_jmidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jmidi = d_jmidi[complete.cases(d_jmidi),]
+
+step_model_jmidi = train(jeu_11_13 ~., data = d_ped_jmidi, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jmidi), trControl = train_control)
+
+coef_jmidi = coef(step_model_jmidi$finalModel, step_model_jmidi$bestTune[1, 1])
+
+# jeudi soir
+
+d_jsoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jsoir = d_jsoir[complete.cases(d_jsoir),]
+
+step_model_jsoir = train(jeu_17_19 ~., data = d_ped_jsoir, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jsoir), trControl = train_control)
+
+coef_jsoir = coef(step_model_jsoir$finalModel, step_model_jsoir$bestTune[1, 1])
+
+# samedi matin
+
+d_smat = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_11_13, sam_17_19))
+d_ped_smat = d_smat[complete.cases(d_smat),]
+
+step_model_smat = train(sam_7_9 ~., data = d_ped_smat, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_smat), trControl = train_control)
+
+coef_smat = coef(step_model_smat$finalModel, step_model_smat$bestTune[1, 1])
+
+# samedi midi
+
+d_smidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_17_19))
+d_ped_smidi = d_smidi[complete.cases(d_smidi),]
+
+step_model_smidi = train(sam_11_13 ~., data = d_ped_smidi, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_smidi), trControl = train_control)
+
+coef_smidi = coef(step_model_smidi$finalModel, step_model_smidi$bestTune[1, 1])
+
+# samedi soir
+
+d_ssoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13))
+d_ped_ssoir = d_ssoir[complete.cases(d_ssoir),]
+
+step_model_ssoir = train(sam_17_19 ~., data = d_ped_ssoir, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_ssoir), trControl = train_control)
+
+coef_ssoir = coef(step_model_ssoir$finalModel, step_model_ssoir$bestTune[1, 1])
+
+# Calcul directement dans R -----------------------------------------------
+
+# une boucle for pour chaque période, qui met dans une variable string la formule du modèle
+
+i = 1
+model_jmat = ''
+
+for (e in coef_jmat){
+  if (names(which(coef_jmat[i] == e)) == '(Intercept)'){
+    model_jmat = paste(model_jmat, e)
+  }
+  else{
+    model_jmat = paste(model_jmat, '+', e, '*', names(which(coef_jmat[i] == e)))
+  }
+  i = i + 1
+}
+model_jmat = paste('exp(', model_jmat, ')')
+
+i = 1
+model_jmidi = ''
+
+for (e in coef_jmidi){
+  if (names(which(coef_jmidi[i] == e)) == '(Intercept)'){
+    model_jmidi = paste(model_jmidi, e)
+  }
+  else{
+    model_jmidi = paste(model_jmidi, '+', e, '*', names(which(coef_jmidi[i] == e)))
+  }
+  i = i + 1
+}
+model_jmidi = paste('exp(', model_jmidi, ')')
+
+i = 1
+model_jsoir = ''
+
+for (e in coef_jsoir){
+  if (names(which(coef_jsoir[i] == e)) == '(Intercept)'){
+    model_jsoir = paste(model_jsoir, e)
+  }
+  else{
+    model_jsoir = paste(model_jsoir, '+', e, '*', names(which(coef_jsoir[i] == e)))
+  }
+  i = i + 1
+}
+model_jsoir = paste('exp(', model_jsoir, ')')
+
+i = 1
+model_smat = ''
+
+for (e in coef_smat){
+  if (names(which(coef_smat[i] == e)) == '(Intercept)'){
+    model_smat = paste(model_smat, e)
+  }
+  else{
+    model_smat = paste(model_smat, '+', e, '*', names(which(coef_smat[i] == e)))
+  }
+  i = i + 1
+}
+model_smat = paste('exp(', model_smat, ')')
+
+i = 1
+model_smidi = ''
+
+for (e in coef_smidi){
+  if (names(which(coef_smidi[i] == e)) == '(Intercept)'){
+    model_smidi = paste(model_smidi, e)
+  }
+  else{
+    model_smidi = paste(model_smidi, '+', e, '*', names(which(coef_smidi[i] == e)))
+  }
+  i = i + 1
+}
+model_smidi = paste('exp(', model_smidi, ')')
+
+i = 1
+model_ssoir = ''
+
+for (e in coef_ssoir){
+  if (names(which(coef_ssoir[i] == e)) == '(Intercept)'){
+    model_ssoir = paste(model_ssoir, e)
+  }
+  else{
+    model_ssoir = paste(model_ssoir, '+', e, '*', names(which(coef_ssoir[i] == e)))
+  }
+  i = i + 1
+}
+model_ssoir = paste('exp(', model_ssoir, ')')
+
+# ajout des 6 nouvelles colonnes dans d_full
+
+d_full = mutate(d_full, jmat = case_when(
+  is.na(jeu_7_9) ~ eval(parse(text = model_jmat)),
+  TRUE ~ jeu_7_9))
+d_full = mutate(d_full, jmidi = case_when(
+  is.na(jeu_11_13) ~ eval(parse(text = model_jmidi)),
+  TRUE ~ jeu_11_13))
+d_full = mutate(d_full, jsoir = case_when(
+  is.na(jeu_17_19) ~ eval(parse(text = model_jsoir)),
+  TRUE ~ jeu_17_19))
+
+d_full = mutate(d_full, smat = case_when(
+  is.na(sam_7_9) ~ eval(parse(text = model_smat)),
+  TRUE ~ sam_7_9))
+d_full = mutate(d_full, smidi = case_when(
+  is.na(sam_11_13) ~ eval(parse(text = model_smidi)),
+  TRUE ~ sam_11_13))
+d_full = mutate(d_full, ssoir = case_when(
+  is.na(sam_17_19) ~ eval(parse(text = model_ssoir)),
+  TRUE ~ sam_17_19))
+
+# exportation des 6 nouvelles colonnes (+ fid) dans un .csv pour QGIS
+
+resultats = d_full %>% select(fid, jmat, jmidi, jsoir, smat, smidi, ssoir)
+
+write.csv(resultats, file = 'resultats.csv', quote = FALSE)
+
+# Évaluation de la qualité des modèles -----------------------------------------------------
+
+# cor_full est la table des corrélations au carré pour toutes les variables
+
+cor_jmat = correlation_table(data = d_jmat[complete.cases(d_jmat),], target = 'jeu_7_9')
+cor_jmidi = correlation_table(data = d_jmidi[complete.cases(d_jmidi),], target = 'jeu_11_13')
+cor_jsoir = correlation_table(data = d_jsoir[complete.cases(d_jsoir),], target = 'jeu_17_19')
+
+cor_smat = correlation_table(data = d_smat[complete.cases(d_smat),], target = 'sam_7_9')
+cor_smidi = correlation_table(data = d_smidi[complete.cases(d_smidi),], target = 'sam_11_13')
+cor_ssoir = correlation_table(data = d_ssoir[complete.cases(d_ssoir),], target = 'sam_17_19')
+
+cor_full = merge(cor_jmat, cor_jmidi, by = 'Variable')
+cor_full = merge(cor_full, cor_jsoir, by = 'Variable')
+cor_full = merge(cor_full, cor_smat, by = 'Variable')
+cor_full = merge(cor_full, cor_smidi, by = 'Variable')
+cor_full = merge(cor_full, cor_ssoir, by = 'Variable')
+
+cor_full$jeu_7_9 = (cor_full$jeu_7_9)^2
+cor_full$jeu_11_13 = (cor_full$jeu_11_13)^2
+cor_full$jeu_17_19 = (cor_full$jeu_17_19)^2
+
+cor_full$sam_7_9 = (cor_full$sam_7_9)^2
+cor_full$sam_11_13 = (cor_full$sam_11_13)^2
+cor_full$sam_17_19 = (cor_full$sam_17_19)^2
+
+# Corrélations entre le nombre de piétons mesuré et le nombre calculé --------
+
+# jmat
+cor_comp_jmat = data.frame(mutate(d_full_log, jmat = eval(parse(text = model_jmat))))
+cor_comp_jmat = subset(cor_comp_jmat, select = c(jeu_7_9, jmat))
+cor_comp_jmat$jeu_7_9 = exp(cor_comp_jmat$jeu_7_9)
+cor_comp_jmat = cor_comp_jmat[complete.cases(cor_comp_jmat$jeu_7_9),]
+
+# jmidi
+cor_comp_jmidi = data.frame(mutate(d_full_log, jmidi = eval(parse(text = model_jmidi))))
+cor_comp_jmidi = subset(cor_comp_jmidi, select = c(jeu_11_13, jmidi))
+cor_comp_jmidi$jeu_11_13 = exp(cor_comp_jmidi$jeu_11_13)
+cor_comp_jmidi = cor_comp_jmidi[complete.cases(cor_comp_jmidi$jeu_11_13),]
+
+# jsoir
+cor_comp_jsoir = data.frame(mutate(d_full_log, jsoir = eval(parse(text = model_jsoir))))
+cor_comp_jsoir = subset(cor_comp_jsoir, select = c(jeu_17_19, jsoir))
+cor_comp_jsoir$jeu_17_19 = exp(cor_comp_jsoir$jeu_17_19)
+cor_comp_jsoir = cor_comp_jsoir[complete.cases(cor_comp_jsoir$jeu_17_19),]
+
+# smat
+cor_comp_smat = data.frame(mutate(d_full_log, smat = eval(parse(text = model_smat))))
+cor_comp_smat = subset(cor_comp_smat, select = c(sam_7_9, smat))
+cor_comp_smat$sam_7_9 = exp(cor_comp_smat$sam_7_9)
+cor_comp_smat = cor_comp_smat[complete.cases(cor_comp_smat$sam_7_9),]
+
+# smidi
+cor_comp_smidi = data.frame(mutate(d_full_log, smidi = eval(parse(text = model_smidi))))
+cor_comp_smidi = subset(cor_comp_smidi, select = c(sam_11_13, smidi))
+cor_comp_smidi$sam_11_13 = exp(cor_comp_smidi$sam_11_13)
+cor_comp_smidi = cor_comp_smidi[complete.cases(cor_comp_smidi$sam_11_13),]
+
+# ssoir
+cor_comp_ssoir = data.frame(mutate(d_full_log, ssoir = eval(parse(text = model_ssoir))))
+cor_comp_ssoir = subset(cor_comp_ssoir, select = c(sam_17_19, ssoir))
+cor_comp_ssoir$sam_17_19 = exp(cor_comp_ssoir$sam_17_19)
+cor_comp_ssoir = cor_comp_ssoir[complete.cases(cor_comp_ssoir$sam_17_19),]
+
+cor_models = data.frame(c('model_jmat', 'model_jmidi', 'model_jsoir', 'model_smat', 'model_smidi', 'model_ssoir'),
+                        c(cor(log(cor_comp_jmat$jeu_7_9, exp(1)), log(cor_comp_jmat$jmat, exp(1))),
+                          cor(log(cor_comp_jmidi$jeu_11_13, exp(1)), log(cor_comp_jmidi$jmidi, exp(1))),
+                          cor(log(cor_comp_jsoir$jeu_17_19, exp(1)), log(cor_comp_jsoir$jsoir, exp(1))),
+                          cor(log(cor_comp_smat$sam_7_9, exp(1)), log(cor_comp_smat$smat, exp(1))),
+                          cor(log(cor_comp_smidi$sam_11_13, exp(1)), log(cor_comp_smidi$smidi, exp(1))),
+                          cor(log(cor_comp_ssoir$sam_17_19, exp(1)), log(cor_comp_ssoir$ssoir, exp(1)))),
+                        c(cor.test(log(cor_comp_jmat$jeu_7_9, exp(1)), log(cor_comp_jmat$jmat, exp(1)))$p.value,
+                          cor.test(log(cor_comp_jmidi$jeu_11_13, exp(1)), log(cor_comp_jmidi$jmidi, exp(1)))$p.value,
+                          cor.test(log(cor_comp_jsoir$jeu_17_19, exp(1)), log(cor_comp_jsoir$jsoir, exp(1)))$p.value,
+                          cor.test(log(cor_comp_smat$sam_7_9, exp(1)), log(cor_comp_smat$smat, exp(1)))$p.value,
+                          cor.test(log(cor_comp_smidi$sam_11_13, exp(1)), log(cor_comp_smidi$smidi, exp(1)))$p.value,
+                          cor.test(log(cor_comp_ssoir$sam_17_19, exp(1)), log(cor_comp_ssoir$ssoir, exp(1)))$p.value)
+)
+
+names(cor_models)[1] <- "periode"
+names(cor_models)[2] <- "correlation"
+names(cor_models)[3] <- "p_value"
+
+cor_models$correlation_2 = (cor_models$correlation)^2
+
+# Calcul des erreurs ------------------------------------------------------
+
+# ea = erreur absolue, er = erreur relative
+
+erreurs = data.frame(
+  'id' = d_full$fid,
+  'jeu_7_9' = log(d_full$jeu_7_9, exp(1)), 'jeu_11_13' = log(d_full$jeu_11_13, exp(1)),
+  'jeu_17_19' = log(d_full$jeu_17_19, exp(1)), 'sam_7_9' = log(d_full$sam_7_9, exp(1)),
+  'sam_11_13'= log(d_full$sam_11_13, exp(1)), 'sam_17_19' = log(d_full$sam_17_19, exp(1)), # valeurs mesurées
+  'jmat' = log(mutate(d_full, temp = eval(parse(text = model_jmat)))$temp, exp(1)),
+  'jmidi' = log(mutate(d_full, temp = eval(parse(text = model_jmidi)))$temp, exp(1)),
+  'jsoir' = log(mutate(d_full, temp = eval(parse(text = model_jsoir)))$temp, exp(1)),
+  'smat' = log(mutate(d_full, temp = eval(parse(text = model_smat)))$temp, exp(1)),
+  'smidi' = log(mutate(d_full, temp = eval(parse(text = model_smidi)))$temp, exp(1)),
+  'ssoir' = log(mutate(d_full, temp = eval(parse(text = model_ssoir)))$temp, exp(1))) # valeurs calculées
+
+erreurs[erreurs == 0] = NA # remplace les 0 par des NA
+
+erreurs$ea_jmat = abs(erreurs$jeu_7_9 - erreurs$jmat)
+erreurs$ea_jmidi = abs(erreurs$jeu_11_13 - erreurs$jmidi)
+erreurs$ea_jsoir = abs(erreurs$jeu_17_19 - erreurs$jsoir)
+erreurs$ea_smat = abs(erreurs$sam_7_9 - erreurs$smat)
+erreurs$ea_smidi = abs(erreurs$sam_11_13 - erreurs$smidi)
+erreurs$ea_ssoir = abs(erreurs$sam_17_19 - erreurs$ssoir)
+
+erreurs$er_jmat = erreurs$ea_jmat / erreurs$jeu_7_9
+erreurs$er_jmidi = erreurs$ea_jmidi / erreurs$jeu_11_13
+erreurs$er_jsoir = erreurs$ea_jsoir / erreurs$jeu_17_19
+erreurs$er_smat = erreurs$ea_smat / erreurs$sam_7_9
+erreurs$er_smidi = erreurs$ea_smidi / erreurs$sam_11_13
+erreurs$er_ssoir = erreurs$ea_ssoir / erreurs$sam_17_19
+
+erreurs$emq = sqrt((erreurs$er_jmat^2 + erreurs$er_jmidi^2 + erreurs$er_jsoir^2 +
+  erreurs$er_smat^2 + erreurs$er_smidi^2 + erreurs$er_ssoir^2)/6) # erreur quadratique moyenne
+
+erreurs = erreurs[rowSums(is.na(erreurs)) != ncol(erreurs)-7,] # enlève les NA
+
+# calcul des emq totales
+
+som_emq = 0
+for (e in c(erreurs$emq)[complete.cases(c(erreurs$emq))]){
+  som_emq = som_emq + e^2
+}
+emq_tot = sqrt(som_emq / length((erreurs$emq)[complete.cases(c(erreurs$emq))])) # erreur moyenne quadratique totale
+
+som_er_jmat = 0
+for (e in c(erreurs$er_jmat)[complete.cases(c(erreurs$er_jmat))]){
+  som_er_jmat = som_er_jmat + e^2
+}
+er_jmat_tot = sqrt(som_er_jmat / length((erreurs$er_jmat)[complete.cases(c(erreurs$er_jmat))]))
+
+som_er_jmidi = 0
+for (e in c(erreurs$er_jmidi)[complete.cases(c(erreurs$er_jmidi))]){
+  som_er_jmidi = som_er_jmidi + e^2
+}
+er_jmidi_tot = sqrt(som_er_jmidi / length((erreurs$er_jmidi)[complete.cases(c(erreurs$er_jmidi))]))
+
+som_er_jsoir = 0
+for (e in c(erreurs$er_jsoir)[complete.cases(c(erreurs$er_jsoir))]){
+  som_er_jsoir = som_er_jsoir + e^2
+}
+er_jsoir_tot = sqrt(som_er_jsoir / length((erreurs$er_jsoir)[complete.cases(c(erreurs$er_jsoir))]))
+
+som_er_smat = 0
+for (e in c(erreurs$er_smat)[complete.cases(c(erreurs$er_smat))]){
+  som_er_smat = som_er_smat + e^2
+}
+er_smat_tot = sqrt(som_er_smat / length((erreurs$er_smat)[complete.cases(c(erreurs$er_smat))]))
+
+som_er_smidi = 0
+for (e in c(erreurs$er_smidi)[complete.cases(c(erreurs$er_smidi))]){
+  som_er_smidi = som_er_smidi + e^2
+}
+er_smidi_tot = sqrt(som_er_smidi / length((erreurs$er_smidi)[complete.cases(c(erreurs$er_smidi))]))
+
+som_er_ssoir = 0
+for (e in c(erreurs$er_ssoir)[complete.cases(c(erreurs$er_ssoir))]){
+  som_er_ssoir = som_er_ssoir + e^2
+}
+er_ssoir_tot = sqrt(som_er_ssoir / length((erreurs$er_ssoir)[complete.cases(c(erreurs$er_ssoir))]))
+
+emq = data.frame('er_jmat_tot' = er_jmat_tot,
+                 'er_jmidi_tot' = er_jmidi_tot,
+                 'er_jsoir_tot' = er_jsoir_tot,
+                 'er_smat_tot' = er_smat_tot,
+                 'er_smidi_tot' = er_smidi_tot,
+                 'er_ssoir_tot' = er_ssoir_tot,
+                 'emq_tot' = emq_tot)
+
+# graphique des erreurs
+
+plot_jmat = ggplot(erreurs, aes(x = reorder(id, jeu_7_9), group = 1)) +
+  geom_line(aes(y = jeu_7_9), color = 'black') +
+  geom_line(aes(y = jmat), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Jeudi matin')
+
+plot_jmidi = ggplot(erreurs, aes(x = reorder(id, jeu_11_13), group = 1)) +
+  geom_line(aes(y = jeu_11_13), color = 'black') +
+  geom_line(aes(y = jmidi), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Jeudi midi')
+
+plot_jsoir = ggplot(erreurs, aes(x = reorder(id, jeu_17_19), group = 1)) +
+  geom_line(aes(y = jeu_17_19), color = 'black') +
+  geom_line(aes(y = jsoir), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Jeudi soir')
+
+plot_smat = ggplot(erreurs, aes(x = reorder(id, sam_7_9), group = 1)) +
+  geom_line(aes(y = sam_7_9), color = 'black') +
+  geom_line(aes(y = smat), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Samedi matin')
+
+plot_smidi = ggplot(erreurs, aes(x = reorder(id, sam_11_13), group = 1)) +
+  geom_line(aes(y = sam_11_13), color = 'black') +
+  geom_line(aes(y = smidi), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Samedi midi')
+
+plot_ssoir = ggplot(erreurs, aes(x = reorder(id, sam_17_19), group = 1)) +
+  geom_line(aes(y = sam_17_19), color = 'black') +
+  geom_line(aes(y = ssoir), color = 'blue') +
+  scale_x_discrete(breaks = NULL) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = 'compteurs', y = 'piétons') +
+  ggtitle('Samedi soir')
+
+grid.arrange(plot_jmat, plot_jmidi, plot_jsoir, plot_smat, plot_smidi, plot_ssoir)
+
+# Résumé des tableaux -----------------------------------------------------
+
+# d_full
+# Le tableau avec les données de base et les données calculées (tableau complet)
+
+# cor_full
+# La table contenant les corrélations au carré de chaque variable pour chaque modèle
+
+# cor_coef_jmat
+# La corrélation au carré des coefficients utilisés pour chaque modèle
+
+# resultats
+# Le tableau final. Les 6 dernières colonnes donnent le nombre de piéton calculé selon les modèles
+
+# cor_models
+# Donne les corrélations et leur significativité pour chacun des 6 modèles.
+# La corrélation se fait entre le log du nombre mesuré de piétons et le log du nombre calculé pour les mêmes segments.
+
+# emq
+# Résumé des erreurs
+
+# coef_jmat (dans la console) permet de voir les coefficients de la formule
+
+View(d_full)
+View(resultats)
+View(cor_full)
+View(cor_models)
+View(emq)
