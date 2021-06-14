@@ -1,17 +1,92 @@
+# Comment utiliser ce code ------------------------------------------------
+
+# Ce programme permet de déterminer différents modèles pour la prédiction
+# des mouvements piétons. Les trois modèles proposés dans ce code sont les
+# suivants :
+#   - régression multiple (pas à pas)
+#   - régression relative au meilleur sous-ensemble
+#   - régression LASSO
+# 
+# Chacun de ces trois modèles sont codés sous forme de fonction. Le résultat
+# de chaque fonction est une liste contenant le tableau d'entrée avec les
+# résultats calculés, la formule du modèle, le R2, l'EQM, la valeur mesurée
+# maximale, la valeur calculée maximale et l'écart (en pourcents) entre ces
+# deux valeurs.
+# 
+# Pour modifier les modèles, il est possible de jouer avec les paramètres
+# des fonctions dans la partie 'Paramètres'.
+# 
+# À la fin, le tableau 'qualite' résume l'écart, le R2 et l'EQM de chaque
+# modèle pour chaque période.
+
 rm(list = ls()); graphics.off(); cat('\014') # tout réinitialiser
+set.seed(90) # pour la reproductibilité
+
+# Paramètres --------------------------------------------------------------
+
+# modifier ces paramètres permet d'obtenir différents modèles
+
+##### Pour la régression multiple :
+
+# méthode de régression
+# valeurs possibles : 'leapSeq', 'leapBackward', 'leapForward'
+methode = 'leapSeq'
+
+# mesure pour trouver le meilleur modèle
+# valeurs possibles : 'Rsquared', 'RMSE'
+metrique = 'Rsquared' 
+
+# cross-validation : nombre de groupes k et nombre de répétitions r
+k_multi = 10
+r_multi = 10
+
+# nombre maximal de variables m pour le modèle, pour chaque période
+m_multi_jmat = 2
+m_multi_jmidi = 2
+m_multi_jsoir = 3
+m_multi_smat = 2
+m_multi_smidi = 2
+m_multi_ssoir = 5
+
+
+##### Pour la régression relative au meilleur sous-ensemble :
+
+# cross-validation : nombre de groupes k et nombre de répétitions r
+k_subset = 10
+r_subset = 10
+
+# nombre maximal de variables m pour le modèle, pour chaque période
+m_subset_jmat = 3
+m_subset_jmidi = 3
+m_subset_jsoir = 3
+m_subset_smat = 2
+m_subset_smidi = 2
+m_subset_ssoir = 2
+
+
+##### Pour la régression LASSO :
+
+# cross-validation : nombre de groupes k
+k_lasso = 10
 
 # Préparation -------------------------------------------------------------
 
-require('caret')
-require('leaps')
-require('dplyr')
-require('tidyverse')
-require('funModeling')
-require('ggplot2')
-require('gridExtra')
+# packages
+library(caret)
+library(leaps)
+library(dplyr)
+library(tidyverse)
+library(funModeling)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(relaxo)
+library(glmnet)
 
+# tableau des données
 d_full = read.csv('var.csv', sep = ',')
 
+# tableau des données, nombre de piétons remplacés par leur logarithme naturel
 d_full_log = d_full
 d_full_log$jeu_7_9 = log(d_full_log$jeu_7_9, exp(1))
 d_full_log$jeu_11_13 = log(d_full_log$jeu_11_13, exp(1))
@@ -20,454 +95,382 @@ d_full_log$sam_7_9 = log(d_full_log$sam_7_9, exp(1))
 d_full_log$sam_11_13 = log(d_full_log$sam_11_13, exp(1))
 d_full_log$sam_17_19 = log(d_full_log$sam_17_19, exp(1))
 
-set.seed(12)
 
-# création du step model avec l'aide de :
+# Fonction : Régression multiple ------------------------------------------
+
 # http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/154-stepwise-regression-essentials-in-r/
 
-# théorie du k-fold Cross-Validation
-# https://machinelearningmastery.com/k-fold-cross-validation/
+multi_regression = function(donnees_full, donnees_periode, nom_periode, nouveau_nom, methode, metrique, k, r, nv_max){
+  
+  # cross-validation
+  train_control = trainControl(method = 'repeatedcv', number = k, repeats = r)
+  
+  # calcul du modèle
+  step_model = train(
+    y = donnees_periode[, length(donnees_periode)],
+    x = donnees_periode[, 1:length(donnees_periode)-1],
+    method = methode,
+    metric = metrique,
+    tuneGrid = data.frame(nvmax = 1:nv_max),
+    trControl = train_control
+    )
+  
+  # meilleur modèle
+  coef = coef(step_model$finalModel, step_model$bestTune[1, 1])
+  
+  # une boucle for qui met dans une variable string la formule du modèle
+  i = 1
+  model = ''
+  
+  for (e in coef){
+    if (names(which(coef[i] == e)) == '(Intercept)'){
+      model = paste(model, e)
+    }
+    else{
+      model = paste(model, '+', e, '*', names(which(coef[i] == e)))
+    }
+    i = i + 1
+  }
+  model = paste('exp(', model, ')')
+  
+  # ajout des résultats dans donnees_full
+  donnees_full = donnees_full %>% mutate(
+    nouveau = case_when(
+      is.na(donnees_full[[nom_periode]]) ~ eval(parse(text = model)),
+      TRUE ~ exp(donnees_full[[nom_periode]]))
+  )
+  
+  colnames(donnees_full)[length(donnees_full)] = nouveau_nom
+  
+  # tableau pour comparer les valeurs mesurées et valeurs calculées
+  comp = donnees_full
+  comp = comp %>% mutate(
+    nouveau = case_when(
+      TRUE ~ eval(parse(text = model)))
+  )
+  
+  comp = data.frame(comp[[nom_periode]], log(comp$nouveau, exp(1)))
+  colnames(comp) = c(nom_periode, nouveau_nom)
+  comp = comp[complete.cases(comp[[nom_periode]]),]
+  
+  # corrélation
+  cor_test = cor.test(comp[[nom_periode]], comp[[nouveau_nom]])
+  
+  # erreurs
+  comp[comp == 0] = NA
+  comp$absolue = abs(comp[[nom_periode]] - comp[[nouveau_nom]])
+  comp$relative = comp$absolue / comp[[nom_periode]]
+  somme_relative = 0
+  for (e in c(comp$relative)[complete.cases(c(comp$relative))]){
+    somme_relative = somme_relative + e^2
+  }
+  eqm = sqrt(somme_relative / length((comp$relative)[complete.cases(c(comp$relative))]))
+  
+  # valeur maximale
+  max_mesure = exp(max(donnees_periode[[nom_periode]]))
+  max_calcul = max(donnees_full[[nouveau_nom]])
+  ecart = (max_calcul - max_mesure) / max_mesure
+  
+  # ce que la fonction retourne
+  liste = list(donnees_full, cor_test$estimate^2, eqm, coef, max_mesure, max_calcul, ecart)
+  names(liste) = c('Données', 'R2', 'EQM', 'Modèle', 'Mesure max.', 'Calcul max.', 'Écart')
+  return(liste)
+}
 
-# Variables avec lesquelles on peut jouer ---------------------------------
 
-# pour le machine learning (number : nombre de groupes / repeats : nombre de répétitions)
-train_control <- trainControl(method = 'repeatedcv', number = 10, repeats = 10)
+# Fonction : Régression relative au meilleur sous-ensemble ----------------
 
-# valeur du nvmax : nombre maximum de variables de prédiction
-nv_jmat = 2
-nv_jmidi = 2
-nv_jsoir = 3
-nv_smat = 2
-nv_smidi = 2 # 1
-nv_ssoir = 5
+# http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/155-best-subsets-regression-essentials-in-r/
 
-# méthode pour la création du modèle
-methode = 'leapSeq' # stepwise regression
-metric = 'Rsquared' # basée sur les corrélations au carré
+subset_regression = function(donnees_full, donnees_periode, nom_periode, nouveau_nom, k, r, nv_max){
+  
+  # calcul des modèles
+  models = regsubsets(
+    y = donnees_periode[, length(donnees_periode)],
+    x = donnees_periode[, 1:length(donnees_periode)-1],
+    nvmax = nv_max
+  )
+  
+  # fonction pour obtenir les formules des modèles
+  get_model_formula = function(id, object, outcome){
+    models = summary(object)$which[id,-1]
+    predictors = names(which(models == TRUE))
+    predictors = paste(predictors, collapse = '+')
+    as.formula(paste0(outcome, '~', predictors))
+  }
+  
+  # fonction pour obtenir l'erreur de cross-validation d'un modèle
+  get_cv_error = function(model.formula, data){
+    
+    # cross-validation
+    train_control = trainControl(method = 'repeatedcv', number = k, repeats = r)
+    
+    # calcul du modèle
+    cv = train(
+      model.formula,
+      data = data,
+      method = 'lm',
+      trControl = train_control
+    )
+    
+    # erreur de cross-validation
+    cv$results$RMSE
+  }
+  
+  # calculer l'erreur de cross-validation
+  model.ids = 1:nv_max
+  cv.errors =  map(model.ids, get_model_formula, models, nom_periode) %>%
+    map(get_cv_error, data = donnees_periode) %>%
+    unlist()
+  
+  # sélection du modèle qui minimise l'erreur de cross-validation
+  coef = coef(models, which.min(cv.errors))
+  
+  # une boucle for qui met dans une variable string la formule du modèle
+  i = 1
+  model = ''
+  
+  for (e in coef){
+    if (names(which(coef[i] == e)) == '(Intercept)'){
+      model = paste(model, e)
+    }
+    else{
+      model = paste(model, '+', e, '*', names(which(coef[i] == e)))
+    }
+    i = i + 1
+  }
+  model = paste('exp(', model, ')')
+  
+  # ajout des résultats dans donnees_full
+  donnees_full = donnees_full %>% mutate(
+    nouveau = case_when(
+      is.na(donnees_full[[nom_periode]]) ~ eval(parse(text = model)),
+      TRUE ~ exp(donnees_full[[nom_periode]])),
+  )
+  
+  colnames(donnees_full)[length(donnees_full)] = nouveau_nom
+  
+  # tableau pour comparer les valeurs mesurées et valeurs calculées
+  comp = donnees_full
+  comp = comp %>% mutate(
+    nouveau = case_when(
+      TRUE ~ eval(parse(text = model)))
+  )
+  comp = data.frame(comp[[nom_periode]], log(comp$nouveau, exp(1)))
+  colnames(comp) = c(nom_periode, nouveau_nom)
+  comp = comp[complete.cases(comp[[nom_periode]]),]
+  
+  # corrélation
+  cor_test = cor.test(comp[[nom_periode]], comp[[nouveau_nom]])
+  
+  # erreurs
+  comp[comp == 0] = NA
+  comp$absolue = abs(comp[[nom_periode]] - comp[[nouveau_nom]])
+  comp$relative = comp$absolue / comp[[nom_periode]]
+  somme_relative = 0
+  for (e in c(comp$relative)[complete.cases(c(comp$relative))]){
+    somme_relative = somme_relative + e^2
+  }
+  eqm = sqrt(somme_relative / length((comp$relative)[complete.cases(c(comp$relative))]))
+  
+  # valeur maximale
+  max_mesure = exp(max(donnees_periode[[nom_periode]]))
+  max_calcul = max(donnees_full[[nouveau_nom]])
+  ecart = (max_calcul - max_mesure) / max_mesure
+  
+  # ce que la fonction retourne
+  liste = list(donnees_full, cor_test$estimate^2, eqm, coef, max_mesure, max_calcul, ecart)
+  names(liste) = c('Données', 'R2', 'EQM', 'Modèle', 'Mesure max.', 'Calcul max.', 'Écart')
+  return(liste)
+}
 
-# Calcul des modèles --------------------------------------------------------
 
-# jeudi matin
+# Fonction : LASSO --------------------------------------------------------
 
+# https://www.pluralsight.com/guides/linear-lasso-and-ridge-regression-with-r
+
+lasso_regression = function(donnees_full, donnees_periode, nom_periode, nouveau_nom, nfolds){
+  
+  # nom des colonnes
+  cols = names(donnees_periode[1:length(donnees_periode)-1])
+  
+  # les lambdas que la cross-validation va évaluer
+  lambdas = 10^seq(2, -3, by = -0.1)
+  
+  # cross-validation pour trouver le meilleur lambda
+  lasso_reg = cv.glmnet(
+    as.matrix(donnees_periode[1:length(donnees_periode)-1]),
+    as.matrix(donnees_periode[length(donnees_periode)]),
+    alpha = 1, lambda = lambdas, standardize = TRUE, nfolds = nfolds
+  )
+  
+  # modèle lasso avec le meilleur lambda
+  lasso_model = glmnet(
+    as.matrix(donnees_periode[1:length(donnees_periode)-1]),
+    as.matrix(donnees_periode[length(donnees_periode)]),
+    alpha = 1, lambda = lasso_reg$lambda.1se, standardize = TRUE
+  )
+  
+  # une boucle for qui met dans une variable string la formule du modèle
+  model = ''
+
+  for (e in 1:length(cols)){
+    model = paste(model, '+', lasso_model$beta[e], '*', cols[e])
+  }
+
+  model = paste('exp(', lasso_model$a0, model, ')')
+  
+  # ajout des résultats dans donnees_full
+  donnees_full = donnees_full %>% mutate(
+    nouveau = case_when(
+    is.na(donnees_full[[nom_periode]]) ~ eval(parse(text = model)),
+    TRUE ~ exp(donnees_full[[nom_periode]]))
+    )
+  
+  colnames(donnees_full)[length(donnees_full)] = nouveau_nom
+  
+  # tableau pour comparer les valeurs mesurées et valeurs calculées
+  comp = donnees_full
+  comp = comp %>% mutate(
+    nouveau = case_when(
+      TRUE ~ eval(parse(text = model)))
+  )
+  
+  comp = data.frame(comp[[nom_periode]], log(comp$nouveau, exp(1)))
+  colnames(comp) = c(nom_periode, nouveau_nom)
+  comp = comp[complete.cases(comp[[nom_periode]]),]
+  
+  # corrélation
+  cor_test = cor.test(comp[[nom_periode]], comp[[nouveau_nom]])
+  
+  # erreurs
+  comp[comp == 0] = NA
+  comp$absolue = abs(comp[[nom_periode]] - comp[[nouveau_nom]])
+  comp$relative = comp$absolue / comp[[nom_periode]]
+  somme_relative = 0
+  for (e in c(comp$relative)[complete.cases(c(comp$relative))]){
+    somme_relative = somme_relative + e^2
+  }
+  eqm = sqrt(somme_relative / length((comp$relative)[complete.cases(c(comp$relative))]))
+  
+  # valeur maximale
+  max_mesure = exp(max(donnees_periode[[nom_periode]]))
+  max_calcul = max(donnees_full[[nouveau_nom]])
+  ecart = (max_calcul - max_mesure) / max_mesure
+  
+  # ce que la fonction retourne
+  liste = list(donnees_full, cor_test$estimate^2, eqm, model, max_mesure, max_calcul, ecart, lasso_reg$lambda.1se)
+  names(liste) = c('Données', 'R2', 'EQM', 'Modèle', 'Mesure max.', 'Calcul max.', 'Écart', 'Lambda')
+  return(liste)
+}
+
+# Calcul : Régression multiple --------------------------------------------
+
+# extraction des données pour les segments avec comptages
 d_jmat = subset(d_full_log, select = -c(fid, compteur, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
 d_ped_jmat = d_jmat[complete.cases(d_jmat),]
-
-step_model_jmat = train(jeu_7_9 ~., data = d_ped_jmat, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jmat), trControl = train_control)
-
-coef_jmat = coef(step_model_jmat$finalModel, step_model_jmat$bestTune[1, 1])
-
-# jeudi midi
-
 d_jmidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
 d_ped_jmidi = d_jmidi[complete.cases(d_jmidi),]
-
-step_model_jmidi = train(jeu_11_13 ~., data = d_ped_jmidi, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jmidi), trControl = train_control)
-
-coef_jmidi = coef(step_model_jmidi$finalModel, step_model_jmidi$bestTune[1, 1])
-
-# jeudi soir
-
 d_jsoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, sam_7_9, sam_11_13, sam_17_19))
 d_ped_jsoir = d_jsoir[complete.cases(d_jsoir),]
-
-step_model_jsoir = train(jeu_17_19 ~., data = d_ped_jsoir, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_jsoir), trControl = train_control)
-
-coef_jsoir = coef(step_model_jsoir$finalModel, step_model_jsoir$bestTune[1, 1])
-
-# samedi matin
-
 d_smat = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_11_13, sam_17_19))
 d_ped_smat = d_smat[complete.cases(d_smat),]
-
-step_model_smat = train(sam_7_9 ~., data = d_ped_smat, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_smat), trControl = train_control)
-
-coef_smat = coef(step_model_smat$finalModel, step_model_smat$bestTune[1, 1])
-
-# samedi midi
-
 d_smidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_17_19))
 d_ped_smidi = d_smidi[complete.cases(d_smidi),]
-
-step_model_smidi = train(sam_11_13 ~., data = d_ped_smidi, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_smidi), trControl = train_control)
-
-coef_smidi = coef(step_model_smidi$finalModel, step_model_smidi$bestTune[1, 1])
-
-# samedi soir
-
 d_ssoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13))
 d_ped_ssoir = d_ssoir[complete.cases(d_ssoir),]
 
-step_model_ssoir = train(sam_17_19 ~., data = d_ped_ssoir, method = methode, metric = metric, tuneGrid = data.frame(nvmax = 1:nv_ssoir), trControl = train_control)
-
-coef_ssoir = coef(step_model_ssoir$finalModel, step_model_ssoir$bestTune[1, 1])
-
-# Calcul directement dans R -----------------------------------------------
-
-# une boucle for pour chaque période, qui met dans une variable string la formule du modèle
-
-i = 1
-model_jmat = ''
-
-for (e in coef_jmat){
-  if (names(which(coef_jmat[i] == e)) == '(Intercept)'){
-    model_jmat = paste(model_jmat, e)
-  }
-  else{
-    model_jmat = paste(model_jmat, '+', e, '*', names(which(coef_jmat[i] == e)))
-  }
-  i = i + 1
-}
-model_jmat = paste('exp(', model_jmat, ')')
-
-i = 1
-model_jmidi = ''
-
-for (e in coef_jmidi){
-  if (names(which(coef_jmidi[i] == e)) == '(Intercept)'){
-    model_jmidi = paste(model_jmidi, e)
-  }
-  else{
-    model_jmidi = paste(model_jmidi, '+', e, '*', names(which(coef_jmidi[i] == e)))
-  }
-  i = i + 1
-}
-model_jmidi = paste('exp(', model_jmidi, ')')
-
-i = 1
-model_jsoir = ''
-
-for (e in coef_jsoir){
-  if (names(which(coef_jsoir[i] == e)) == '(Intercept)'){
-    model_jsoir = paste(model_jsoir, e)
-  }
-  else{
-    model_jsoir = paste(model_jsoir, '+', e, '*', names(which(coef_jsoir[i] == e)))
-  }
-  i = i + 1
-}
-model_jsoir = paste('exp(', model_jsoir, ')')
-
-i = 1
-model_smat = ''
-
-for (e in coef_smat){
-  if (names(which(coef_smat[i] == e)) == '(Intercept)'){
-    model_smat = paste(model_smat, e)
-  }
-  else{
-    model_smat = paste(model_smat, '+', e, '*', names(which(coef_smat[i] == e)))
-  }
-  i = i + 1
-}
-model_smat = paste('exp(', model_smat, ')')
-
-i = 1
-model_smidi = ''
-
-for (e in coef_smidi){
-  if (names(which(coef_smidi[i] == e)) == '(Intercept)'){
-    model_smidi = paste(model_smidi, e)
-  }
-  else{
-    model_smidi = paste(model_smidi, '+', e, '*', names(which(coef_smidi[i] == e)))
-  }
-  i = i + 1
-}
-model_smidi = paste('exp(', model_smidi, ')')
-
-i = 1
-model_ssoir = ''
-
-for (e in coef_ssoir){
-  if (names(which(coef_ssoir[i] == e)) == '(Intercept)'){
-    model_ssoir = paste(model_ssoir, e)
-  }
-  else{
-    model_ssoir = paste(model_ssoir, '+', e, '*', names(which(coef_ssoir[i] == e)))
-  }
-  i = i + 1
-}
-model_ssoir = paste('exp(', model_ssoir, ')')
-
-# ajout des 6 nouvelles colonnes dans d_full
-
-d_full = mutate(d_full, jmat = case_when(
-  is.na(jeu_7_9) ~ eval(parse(text = model_jmat)),
-  TRUE ~ jeu_7_9))
-d_full = mutate(d_full, jmidi = case_when(
-  is.na(jeu_11_13) ~ eval(parse(text = model_jmidi)),
-  TRUE ~ jeu_11_13))
-d_full = mutate(d_full, jsoir = case_when(
-  is.na(jeu_17_19) ~ eval(parse(text = model_jsoir)),
-  TRUE ~ jeu_17_19))
-
-d_full = mutate(d_full, smat = case_when(
-  is.na(sam_7_9) ~ eval(parse(text = model_smat)),
-  TRUE ~ sam_7_9))
-d_full = mutate(d_full, smidi = case_when(
-  is.na(sam_11_13) ~ eval(parse(text = model_smidi)),
-  TRUE ~ sam_11_13))
-d_full = mutate(d_full, ssoir = case_when(
-  is.na(sam_17_19) ~ eval(parse(text = model_ssoir)),
-  TRUE ~ sam_17_19))
-
-# exportation des 6 nouvelles colonnes (+ fid) dans un .csv pour QGIS
-
-resultats = d_full %>% select(fid, jmat, jmidi, jsoir, smat, smidi, ssoir)
-
-write.csv(resultats, file = 'resultats.csv', quote = FALSE)
-
-# Évaluation de la qualité des modèles -----------------------------------------------------
-
-# cor_full est la table des corrélations au carré pour toutes les variables
-
-cor_jmat = correlation_table(data = d_jmat[complete.cases(d_jmat),], target = 'jeu_7_9')
-cor_jmidi = correlation_table(data = d_jmidi[complete.cases(d_jmidi),], target = 'jeu_11_13')
-cor_jsoir = correlation_table(data = d_jsoir[complete.cases(d_jsoir),], target = 'jeu_17_19')
-
-cor_smat = correlation_table(data = d_smat[complete.cases(d_smat),], target = 'sam_7_9')
-cor_smidi = correlation_table(data = d_smidi[complete.cases(d_smidi),], target = 'sam_11_13')
-cor_ssoir = correlation_table(data = d_ssoir[complete.cases(d_ssoir),], target = 'sam_17_19')
-
-cor_full = merge(cor_jmat, cor_jmidi, by = 'Variable')
-cor_full = merge(cor_full, cor_jsoir, by = 'Variable')
-cor_full = merge(cor_full, cor_smat, by = 'Variable')
-cor_full = merge(cor_full, cor_smidi, by = 'Variable')
-cor_full = merge(cor_full, cor_ssoir, by = 'Variable')
-
-cor_full$jeu_7_9 = (cor_full$jeu_7_9)^2
-cor_full$jeu_11_13 = (cor_full$jeu_11_13)^2
-cor_full$jeu_17_19 = (cor_full$jeu_17_19)^2
-
-cor_full$sam_7_9 = (cor_full$sam_7_9)^2
-cor_full$sam_11_13 = (cor_full$sam_11_13)^2
-cor_full$sam_17_19 = (cor_full$sam_17_19)^2
-
-# Corrélations entre le nombre de piétons mesuré et le nombre calculé --------
-
-# jmat
-cor_comp_jmat = data.frame(mutate(d_full_log, jmat = eval(parse(text = model_jmat))))
-cor_comp_jmat = subset(cor_comp_jmat, select = c(jeu_7_9, jmat))
-cor_comp_jmat$jeu_7_9 = exp(cor_comp_jmat$jeu_7_9)
-cor_comp_jmat = cor_comp_jmat[complete.cases(cor_comp_jmat$jeu_7_9),]
-
-# jmidi
-cor_comp_jmidi = data.frame(mutate(d_full_log, jmidi = eval(parse(text = model_jmidi))))
-cor_comp_jmidi = subset(cor_comp_jmidi, select = c(jeu_11_13, jmidi))
-cor_comp_jmidi$jeu_11_13 = exp(cor_comp_jmidi$jeu_11_13)
-cor_comp_jmidi = cor_comp_jmidi[complete.cases(cor_comp_jmidi$jeu_11_13),]
-
-# jsoir
-cor_comp_jsoir = data.frame(mutate(d_full_log, jsoir = eval(parse(text = model_jsoir))))
-cor_comp_jsoir = subset(cor_comp_jsoir, select = c(jeu_17_19, jsoir))
-cor_comp_jsoir$jeu_17_19 = exp(cor_comp_jsoir$jeu_17_19)
-cor_comp_jsoir = cor_comp_jsoir[complete.cases(cor_comp_jsoir$jeu_17_19),]
-
-# smat
-cor_comp_smat = data.frame(mutate(d_full_log, smat = eval(parse(text = model_smat))))
-cor_comp_smat = subset(cor_comp_smat, select = c(sam_7_9, smat))
-cor_comp_smat$sam_7_9 = exp(cor_comp_smat$sam_7_9)
-cor_comp_smat = cor_comp_smat[complete.cases(cor_comp_smat$sam_7_9),]
-
-# smidi
-cor_comp_smidi = data.frame(mutate(d_full_log, smidi = eval(parse(text = model_smidi))))
-cor_comp_smidi = subset(cor_comp_smidi, select = c(sam_11_13, smidi))
-cor_comp_smidi$sam_11_13 = exp(cor_comp_smidi$sam_11_13)
-cor_comp_smidi = cor_comp_smidi[complete.cases(cor_comp_smidi$sam_11_13),]
-
-# ssoir
-cor_comp_ssoir = data.frame(mutate(d_full_log, ssoir = eval(parse(text = model_ssoir))))
-cor_comp_ssoir = subset(cor_comp_ssoir, select = c(sam_17_19, ssoir))
-cor_comp_ssoir$sam_17_19 = exp(cor_comp_ssoir$sam_17_19)
-cor_comp_ssoir = cor_comp_ssoir[complete.cases(cor_comp_ssoir$sam_17_19),]
-
-cor_models = data.frame(c('model_jmat', 'model_jmidi', 'model_jsoir', 'model_smat', 'model_smidi', 'model_ssoir'),
-                        c(cor(log(cor_comp_jmat$jeu_7_9, exp(1)), log(cor_comp_jmat$jmat, exp(1))),
-                          cor(log(cor_comp_jmidi$jeu_11_13, exp(1)), log(cor_comp_jmidi$jmidi, exp(1))),
-                          cor(log(cor_comp_jsoir$jeu_17_19, exp(1)), log(cor_comp_jsoir$jsoir, exp(1))),
-                          cor(log(cor_comp_smat$sam_7_9, exp(1)), log(cor_comp_smat$smat, exp(1))),
-                          cor(log(cor_comp_smidi$sam_11_13, exp(1)), log(cor_comp_smidi$smidi, exp(1))),
-                          cor(log(cor_comp_ssoir$sam_17_19, exp(1)), log(cor_comp_ssoir$ssoir, exp(1)))),
-                        c(cor.test(log(cor_comp_jmat$jeu_7_9, exp(1)), log(cor_comp_jmat$jmat, exp(1)))$p.value,
-                          cor.test(log(cor_comp_jmidi$jeu_11_13, exp(1)), log(cor_comp_jmidi$jmidi, exp(1)))$p.value,
-                          cor.test(log(cor_comp_jsoir$jeu_17_19, exp(1)), log(cor_comp_jsoir$jsoir, exp(1)))$p.value,
-                          cor.test(log(cor_comp_smat$sam_7_9, exp(1)), log(cor_comp_smat$smat, exp(1)))$p.value,
-                          cor.test(log(cor_comp_smidi$sam_11_13, exp(1)), log(cor_comp_smidi$smidi, exp(1)))$p.value,
-                          cor.test(log(cor_comp_ssoir$sam_17_19, exp(1)), log(cor_comp_ssoir$ssoir, exp(1)))$p.value)
-)
-
-names(cor_models)[1] <- "periode"
-names(cor_models)[2] <- "correlation"
-names(cor_models)[3] <- "p_value"
-
-cor_models$correlation_2 = (cor_models$correlation)^2
-
-# Calcul des erreurs ------------------------------------------------------
-
-# ea = erreur absolue, er = erreur relative
-
-erreurs = data.frame(
-  'id' = d_full$fid,
-  'jeu_7_9' = log(d_full$jeu_7_9, exp(1)), 'jeu_11_13' = log(d_full$jeu_11_13, exp(1)),
-  'jeu_17_19' = log(d_full$jeu_17_19, exp(1)), 'sam_7_9' = log(d_full$sam_7_9, exp(1)),
-  'sam_11_13'= log(d_full$sam_11_13, exp(1)), 'sam_17_19' = log(d_full$sam_17_19, exp(1)), # valeurs mesurées
-  'jmat' = log(mutate(d_full, temp = eval(parse(text = model_jmat)))$temp, exp(1)),
-  'jmidi' = log(mutate(d_full, temp = eval(parse(text = model_jmidi)))$temp, exp(1)),
-  'jsoir' = log(mutate(d_full, temp = eval(parse(text = model_jsoir)))$temp, exp(1)),
-  'smat' = log(mutate(d_full, temp = eval(parse(text = model_smat)))$temp, exp(1)),
-  'smidi' = log(mutate(d_full, temp = eval(parse(text = model_smidi)))$temp, exp(1)),
-  'ssoir' = log(mutate(d_full, temp = eval(parse(text = model_ssoir)))$temp, exp(1))) # valeurs calculées
-
-erreurs[erreurs == 0] = NA # remplace les 0 par des NA
-
-erreurs$ea_jmat = abs(erreurs$jeu_7_9 - erreurs$jmat)
-erreurs$ea_jmidi = abs(erreurs$jeu_11_13 - erreurs$jmidi)
-erreurs$ea_jsoir = abs(erreurs$jeu_17_19 - erreurs$jsoir)
-erreurs$ea_smat = abs(erreurs$sam_7_9 - erreurs$smat)
-erreurs$ea_smidi = abs(erreurs$sam_11_13 - erreurs$smidi)
-erreurs$ea_ssoir = abs(erreurs$sam_17_19 - erreurs$ssoir)
-
-erreurs$er_jmat = erreurs$ea_jmat / erreurs$jeu_7_9
-erreurs$er_jmidi = erreurs$ea_jmidi / erreurs$jeu_11_13
-erreurs$er_jsoir = erreurs$ea_jsoir / erreurs$jeu_17_19
-erreurs$er_smat = erreurs$ea_smat / erreurs$sam_7_9
-erreurs$er_smidi = erreurs$ea_smidi / erreurs$sam_11_13
-erreurs$er_ssoir = erreurs$ea_ssoir / erreurs$sam_17_19
-
-erreurs$emq = sqrt((erreurs$er_jmat^2 + erreurs$er_jmidi^2 + erreurs$er_jsoir^2 +
-  erreurs$er_smat^2 + erreurs$er_smidi^2 + erreurs$er_ssoir^2)/6) # erreur quadratique moyenne
-
-erreurs = erreurs[rowSums(is.na(erreurs)) != ncol(erreurs)-7,] # enlève les NA
-
-# calcul des emq totales
-
-som_emq = 0
-for (e in c(erreurs$emq)[complete.cases(c(erreurs$emq))]){
-  som_emq = som_emq + e^2
-}
-emq_tot = sqrt(som_emq / length((erreurs$emq)[complete.cases(c(erreurs$emq))])) # erreur moyenne quadratique totale
-
-som_er_jmat = 0
-for (e in c(erreurs$er_jmat)[complete.cases(c(erreurs$er_jmat))]){
-  som_er_jmat = som_er_jmat + e^2
-}
-er_jmat_tot = sqrt(som_er_jmat / length((erreurs$er_jmat)[complete.cases(c(erreurs$er_jmat))]))
-
-som_er_jmidi = 0
-for (e in c(erreurs$er_jmidi)[complete.cases(c(erreurs$er_jmidi))]){
-  som_er_jmidi = som_er_jmidi + e^2
-}
-er_jmidi_tot = sqrt(som_er_jmidi / length((erreurs$er_jmidi)[complete.cases(c(erreurs$er_jmidi))]))
-
-som_er_jsoir = 0
-for (e in c(erreurs$er_jsoir)[complete.cases(c(erreurs$er_jsoir))]){
-  som_er_jsoir = som_er_jsoir + e^2
-}
-er_jsoir_tot = sqrt(som_er_jsoir / length((erreurs$er_jsoir)[complete.cases(c(erreurs$er_jsoir))]))
-
-som_er_smat = 0
-for (e in c(erreurs$er_smat)[complete.cases(c(erreurs$er_smat))]){
-  som_er_smat = som_er_smat + e^2
-}
-er_smat_tot = sqrt(som_er_smat / length((erreurs$er_smat)[complete.cases(c(erreurs$er_smat))]))
-
-som_er_smidi = 0
-for (e in c(erreurs$er_smidi)[complete.cases(c(erreurs$er_smidi))]){
-  som_er_smidi = som_er_smidi + e^2
-}
-er_smidi_tot = sqrt(som_er_smidi / length((erreurs$er_smidi)[complete.cases(c(erreurs$er_smidi))]))
-
-som_er_ssoir = 0
-for (e in c(erreurs$er_ssoir)[complete.cases(c(erreurs$er_ssoir))]){
-  som_er_ssoir = som_er_ssoir + e^2
-}
-er_ssoir_tot = sqrt(som_er_ssoir / length((erreurs$er_ssoir)[complete.cases(c(erreurs$er_ssoir))]))
-
-emq = data.frame('er_jmat_tot' = er_jmat_tot,
-                 'er_jmidi_tot' = er_jmidi_tot,
-                 'er_jsoir_tot' = er_jsoir_tot,
-                 'er_smat_tot' = er_smat_tot,
-                 'er_smidi_tot' = er_smidi_tot,
-                 'er_ssoir_tot' = er_ssoir_tot,
-                 'emq_tot' = emq_tot)
-
-# graphique des erreurs
-
-plot_jmat = ggplot(erreurs, aes(x = reorder(id, jeu_7_9), group = 1)) +
-  geom_line(aes(y = jeu_7_9), color = 'black') +
-  geom_line(aes(y = jmat), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Jeudi matin')
-
-plot_jmidi = ggplot(erreurs, aes(x = reorder(id, jeu_11_13), group = 1)) +
-  geom_line(aes(y = jeu_11_13), color = 'black') +
-  geom_line(aes(y = jmidi), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Jeudi midi')
-
-plot_jsoir = ggplot(erreurs, aes(x = reorder(id, jeu_17_19), group = 1)) +
-  geom_line(aes(y = jeu_17_19), color = 'black') +
-  geom_line(aes(y = jsoir), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Jeudi soir')
-
-plot_smat = ggplot(erreurs, aes(x = reorder(id, sam_7_9), group = 1)) +
-  geom_line(aes(y = sam_7_9), color = 'black') +
-  geom_line(aes(y = smat), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Samedi matin')
-
-plot_smidi = ggplot(erreurs, aes(x = reorder(id, sam_11_13), group = 1)) +
-  geom_line(aes(y = sam_11_13), color = 'black') +
-  geom_line(aes(y = smidi), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Samedi midi')
-
-plot_ssoir = ggplot(erreurs, aes(x = reorder(id, sam_17_19), group = 1)) +
-  geom_line(aes(y = sam_17_19), color = 'black') +
-  geom_line(aes(y = ssoir), color = 'blue') +
-  scale_x_discrete(breaks = NULL) +
-  theme(axis.text.x = element_blank()) +
-  labs(x = 'compteurs', y = 'piétons') +
-  ggtitle('Samedi soir')
-
-grid.arrange(plot_jmat, plot_jmidi, plot_jsoir, plot_smat, plot_smidi, plot_ssoir)
-
-# Résumé des tableaux -----------------------------------------------------
-
-# d_full
-# Le tableau avec les données de base et les données calculées (tableau complet)
-
-# cor_full
-# La table contenant les corrélations au carré de chaque variable pour chaque modèle
-
-# cor_coef_jmat
-# La corrélation au carré des coefficients utilisés pour chaque modèle
-
-# resultats
-# Le tableau final. Les 6 dernières colonnes donnent le nombre de piéton calculé selon les modèles
-
-# cor_models
-# Donne les corrélations et leur significativité pour chacun des 6 modèles.
-# La corrélation se fait entre le log du nombre mesuré de piétons et le log du nombre calculé pour les mêmes segments.
-
-# emq
-# Résumé des erreurs
-
-# coef_jmat (dans la console) permet de voir les coefficients de la formule
-
-View(d_full)
-View(resultats)
-View(cor_full)
-View(cor_models)
-View(emq)
+# calcul de la régression multiple pour les 6 périodes
+multi_jmat = multi_regression(d_full_log, d_ped_jmat, 'jeu_7_9', 'jmat', methode, metrique, k_multi, r_multi, m_multi_jmat)
+multi_jmidi = multi_regression(multi_jmat$Données, d_ped_jmidi, 'jeu_11_13', 'jmidi', methode, metrique, k_multi, r_multi, m_multi_jmidi)
+multi_jsoir = multi_regression(multi_jmidi$Données, d_ped_jsoir, 'jeu_17_19', 'jsoir', methode, metrique, k_multi, r_multi, m_multi_jsoir)
+multi_smat = multi_regression(multi_jsoir$Données, d_ped_smat, 'sam_7_9', 'smat', methode, metrique, k_multi, r_multi, m_multi_smat)
+multi_smidi = multi_regression(multi_smat$Données, d_ped_smidi, 'sam_11_13', 'smidi', methode, metrique, k_multi, r_multi, m_multi_smidi)
+multi_ssoir = multi_regression(multi_smidi$Données, d_ped_ssoir, 'sam_17_19', 'ssoir', methode, metrique, k_multi, r_multi, m_multi_ssoir)
+
+# mise en forme des données
+multi_resultats = subset(multi_ssoir$Données, select = c(fid, jmat, jmidi, jsoir, smat, smidi, ssoir))
+multi_noms = c('jmat', 'jmidi', 'jsoir', 'smat', 'smidi', 'ssoir')
+multi_ecart = c(multi_jmat$Écart, multi_jmidi$Écart, multi_jsoir$Écart, multi_smat$Écart, multi_smidi$Écart, multi_ssoir$Écart)
+multi_r2 = c(multi_jmat$R2, multi_jmidi$R2, multi_jsoir$R2, multi_smat$R2, multi_smidi$R2, multi_ssoir$R2)
+multi_eqm = c(multi_jmat$EQM, multi_jmidi$EQM, multi_jsoir$EQM, multi_smat$EQM, multi_smidi$EQM, multi_ssoir$EQM)
+multi_qualite = data.frame(multi_noms, multi_ecart, multi_r2, multi_eqm)
+names(multi_qualite) = c('noms', 'multi_ecart', 'multi_r2', 'multi_eqm')
+
+
+# Calcul : Régression relative au meilleur sous-ensemble ------------------
+
+# calcul de la régression relative au meilleur sous-ensemble pour les 6 périodes
+subset_jmat = subset_regression(d_full_log, d_ped_jmat, 'jeu_7_9', 'jmat', k_subset, r_subset, m_subset_jmat)
+subset_jmidi = subset_regression(subset_jmat$Données, d_ped_jmidi, 'jeu_11_13', 'jmidi', k_subset, r_subset, m_subset_jmidi)
+subset_jsoir = subset_regression(subset_jmidi$Données, d_ped_jsoir, 'jeu_17_19', 'jsoir', k_subset, r_subset, m_subset_jsoir)
+subset_smat = subset_regression(subset_jsoir$Données, d_ped_smat, 'sam_7_9', 'smat', k_subset, r_subset, m_subset_smat)
+subset_smidi = subset_regression(subset_smat$Données, d_ped_smidi, 'sam_11_13', 'smidi', k_subset, r_subset, m_subset_smidi)
+subset_ssoir = subset_regression(subset_smidi$Données, d_ped_ssoir, 'sam_17_19', 'ssoir', k_subset, r_subset, m_subset_ssoir)
+
+# mise en forme des données
+subset_resultats = subset(subset_ssoir$Données, select = c(fid, jmat, jmidi, jsoir, smat, smidi, ssoir))
+subset_noms = c('jmat', 'jmidi', 'jsoir', 'smat', 'smidi', 'ssoir')
+subset_ecart = c(subset_jmat$Écart, subset_jmidi$Écart, subset_jsoir$Écart, subset_smat$Écart, subset_smidi$Écart, subset_ssoir$Écart)
+subset_r2 = c(subset_jmat$R2, subset_jmidi$R2, subset_jsoir$R2, subset_smat$R2, subset_smidi$R2, subset_ssoir$R2)
+subset_eqm = c(subset_jmat$EQM, subset_jmidi$EQM, subset_jsoir$EQM, subset_smat$EQM, subset_smidi$EQM, subset_ssoir$EQM)
+subset_qualite = data.frame(subset_noms, subset_ecart, subset_r2, subset_eqm)
+names(subset_qualite) = c('noms', 'subset_ecart', 'subset_r2', 'subset_eqm')
+
+
+# Calcul : LASSO ----------------------------------------------------------
+
+# standardiser les valeurs, sauf le nombre de piétons
+colonnes = names(subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13, sam_17_19)))
+pre = preProcess(d_full_log[,colonnes], method = c('center', 'scale'))
+d_full_log[,colonnes] = predict(pre, d_full_log[,colonnes])
+
+# extraction des données pour les segments avec comptages (données standardisées)
+d_jmat = subset(d_full_log, select = -c(fid, compteur, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jmat = d_jmat[complete.cases(d_jmat),]
+d_jmidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_17_19, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jmidi = d_jmidi[complete.cases(d_jmidi),]
+d_jsoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, sam_7_9, sam_11_13, sam_17_19))
+d_ped_jsoir = d_jsoir[complete.cases(d_jsoir),]
+d_smat = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_11_13, sam_17_19))
+d_ped_smat = d_smat[complete.cases(d_smat),]
+d_smidi = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_17_19))
+d_ped_smidi = d_smidi[complete.cases(d_smidi),]
+d_ssoir = subset(d_full_log, select = -c(fid, compteur, jeu_7_9, jeu_11_13, jeu_17_19, sam_7_9, sam_11_13))
+d_ped_ssoir = d_ssoir[complete.cases(d_ssoir),]
+
+# calcul de la régression LASSO pour les 6 périodes
+lasso_jmat = lasso_regression(d_full_log, d_ped_jmat, 'jeu_7_9', 'jmat', k_lasso)
+lasso_jmidi = lasso_regression(lasso_jmat$Données, d_ped_jmidi, 'jeu_11_13', 'jmidi', k_lasso)
+lasso_jsoir = lasso_regression(lasso_jmidi$Données, d_ped_jsoir, 'jeu_17_19', 'jsoir', k_lasso)
+lasso_smat = lasso_regression(lasso_jsoir$Données, d_ped_smat, 'sam_7_9', 'smat', k_lasso)
+lasso_smidi = lasso_regression(lasso_smat$Données, d_ped_smidi, 'sam_11_13', 'smidi', k_lasso)
+lasso_ssoir = lasso_regression(lasso_smidi$Données, d_ped_ssoir, 'sam_17_19', 'ssoir', k_lasso)
+
+# mise en forme des données
+lasso_resultats = subset(lasso_ssoir$Données, select = c(fid, jmat, jmidi, jsoir, smat, smidi, ssoir))
+lasso_noms = c('jmat', 'jmidi', 'jsoir', 'smat', 'smidi', 'ssoir')
+lasso_ecart = c(lasso_jmat$Écart, lasso_jmidi$Écart, lasso_jsoir$Écart, lasso_smat$Écart, lasso_smidi$Écart, lasso_ssoir$Écart)
+lasso_r2 = c(lasso_jmat$R2, lasso_jmidi$R2, lasso_jsoir$R2, lasso_smat$R2, lasso_smidi$R2, lasso_ssoir$R2)
+lasso_eqm = c(lasso_jmat$EQM, lasso_jmidi$EQM, lasso_jsoir$EQM, lasso_smat$EQM, lasso_smidi$EQM, lasso_ssoir$EQM)
+lasso_qualite = data.frame(lasso_noms, lasso_ecart, lasso_r2, lasso_eqm)
+names(lasso_qualite) = c('noms', 'lasso_ecart', 'lasso_r2', 'lasso_eqm')
+
+
+# Mise en commun ----------------------------------------------------------
+
+# jointure des tableaux sur la qualité des modèles
+qualite = merge(multi_qualite, subset_qualite, by = 'noms')
+qualite = merge(qualite, lasso_qualite, by = 'noms')
+
+# arrondi du nouveau tableau
+numeric_columns = sapply(qualite, mode) == 'numeric'
+qualite[numeric_columns] = round(qualite[numeric_columns], 4)
+
+
+# Exportation des résultats -----------------------------------------------
+
+# exportation des résultats pour QGIS
+write.csv(multi_resultats, file = 'multi_resultats.csv', quote = FALSE)
+write.csv(subset_resultats, file = 'subset_resultats.csv', quote = FALSE)
+write.csv(lasso_resultats, file = 'lasso_resultats.csv', quote = FALSE)
