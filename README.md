@@ -6,7 +6,7 @@ Le travail a pour titre : "Modélisation de volumes piétons : cas d'étude de l
 # Résumé de la recherche :
 La quantification des piétons est importante pour des questions d'urbanisme et de
 politique. Ce travail détaille les étapes nécessaires à la réalisation de modèles de volume
-piétons pour la Ville de Lausanne à partir de données de comptages. Les résultats des
+piéton pour la Ville de Lausanne à partir de données de comptages. Les résultats des
 modèles sont ensuite cartographiés et leur qualité est analysée pour déterminer les
 observations qui peuvent en être tirées. Les cartes produites donnent les tendances
 quantitatives, spatiales et temporelles des déplacements pédestres dans la ville.
